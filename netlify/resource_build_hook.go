@@ -105,8 +105,8 @@ func resourceBuildHookDelete(d *schema.ResourceData, metaRaw interface{}) error 
 }
 
 // Returns the BuildHook structure that can be used for creation or updating.
-func resourceBuildHook_struct(d *schema.ResourceData) *models.BuildHook {
-	return &models.BuildHook{
+func resourceBuildHook_struct(d *schema.ResourceData) *models.BuildHookSetup {
+	return &models.BuildHookSetup{
 		Branch: d.Get("branch").(string),
 		Title:  d.Get("title").(string),
 	}
