@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"debug/elf"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -41,6 +42,8 @@ const (
 	lfsVersionString = "version https://git-lfs.github.com/spec/v1"
 )
 
+var installDirs = []string{"node_modules/", "bower_components/"}
+
 type uploadType int
 type pointerData struct {
 	SHA  string
@@ -71,6 +74,7 @@ type DeployOptions struct {
 	SiteID            string
 	Dir               string
 	FunctionsDir      string
+	BuildDir          string
 	LargeMediaEnabled bool
 
 	IsDraft bool
@@ -101,6 +105,10 @@ type FileBundle struct {
 	// Path OR Buffer should be populated
 	Path   string
 	Buffer io.ReadSeeker
+}
+
+type toolchainSpec struct {
+	Runtime string `json:"runtime"`
 }
 
 func (f *FileBundle) Read(p []byte) (n int, err error) {
@@ -183,8 +191,10 @@ func (n *Netlify) DoDeploy(ctx context.Context, options *DeployOptions, deploy *
 		largeMediaEnabled = deploy.SiteCapabilities.LargeMediaEnabled
 	}
 
+	ignoreInstallDirs := options.Dir == options.BuildDir
+
 	context.GetLogger(ctx).Infof("Getting files info with large media flag: %v", largeMediaEnabled)
-	files, err := walk(options.Dir, options.Observer, largeMediaEnabled)
+	files, err := walk(options.Dir, options.Observer, largeMediaEnabled, ignoreInstallDirs)
 	if err != nil {
 		if options.Observer != nil {
 			options.Observer.OnFailedWalk()
@@ -493,7 +503,7 @@ func (n *Netlify) uploadFile(ctx context.Context, d *models.Deploy, f *FileBundl
 	}
 }
 
-func walk(dir string, observer DeployObserver, useLargeMedia bool) (*deployFiles, error) {
+func walk(dir string, observer DeployObserver, useLargeMedia, ignoreInstallDirs bool) (*deployFiles, error) {
 	files := newDeployFiles()
 
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
@@ -508,7 +518,7 @@ func walk(dir string, observer DeployObserver, useLargeMedia bool) (*deployFiles
 			}
 			rel := forceSlashSeparators(osRel)
 
-			if ignoreFile(rel) {
+			if ignoreFile(rel, ignoreInstallDirs) {
 				return nil
 			}
 
@@ -582,7 +592,11 @@ func bundle(functionDir string, observer DeployObserver) (*deployFiles, error) {
 
 		switch {
 		case zipFile(i):
-			file, err := newFunctionFile(filePath, i, jsRuntime, observer)
+			runtime, err := readZipRuntime(filePath)
+			if err != nil {
+				return nil, err
+			}
+			file, err := newFunctionFile(filePath, i, runtime, observer)
 			if err != nil {
 				return nil, err
 			}
@@ -607,6 +621,36 @@ func bundle(functionDir string, observer DeployObserver) (*deployFiles, error) {
 	}
 
 	return functions, nil
+}
+
+func readZipRuntime(filePath string) (string, error) {
+	zf, err := zip.OpenReader(filePath)
+	if err != nil {
+		return "", err
+	}
+	defer zf.Close()
+
+	for _, file := range zf.File {
+		if file.Name == "netlify-toolchain" {
+			fc, err := file.Open()
+			if err != nil {
+				// Ignore any errors and choose the default runtime.
+				// This preserves the current behavior in this library.
+				return jsRuntime, nil
+			}
+			defer fc.Close()
+
+			var tc toolchainSpec
+			if err := json.NewDecoder(fc).Decode(&tc); err != nil {
+				// Ignore any errors and choose the default runtime.
+				// This preserves the current behavior in this library.
+				return jsRuntime, nil
+			}
+			return tc.Runtime, nil
+		}
+	}
+
+	return jsRuntime, nil
 }
 
 func newFunctionFile(filePath string, i os.FileInfo, runtime string, observer DeployObserver) (*FileBundle, error) {
@@ -698,9 +742,17 @@ func goFile(filePath string, i os.FileInfo, observer DeployObserver) bool {
 	return true
 }
 
-func ignoreFile(rel string) bool {
+func ignoreFile(rel string, ignoreInstallDirs bool) bool {
 	if strings.HasPrefix(rel, ".") || strings.Contains(rel, "/.") || strings.HasPrefix(rel, "__MACOS") {
 		return !strings.HasPrefix(rel, ".well-known/")
+	}
+	if !ignoreInstallDirs {
+		return false
+	}
+	for _, ignorePath := range installDirs {
+		if strings.HasPrefix(rel, ignorePath) {
+			return true
+		}
 	}
 	return false
 }
