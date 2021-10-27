@@ -62,7 +62,8 @@ func resourceDeployKeyDelete(d *schema.ResourceData, metaRaw interface{}) error 
 	params.KeyID = d.Id()
 	_, err := meta.Netlify.Operations.DeleteDeployKey(params, meta.AuthInfo)
 
-        // hack, delete deploy key returns 404 'incorrectly'
-	if err != nil {}
-        return nil
+	// hack, delete deploy key returns 404 'incorrectly'
+	if err != nil {
+	}
+	return nil
 }
